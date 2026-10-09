@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NGA 摸鱼优化
 // @namespace    https://github.com/nga-fish
-// @version      0.2.0
-// @description  将 NGA 分区话题列表页与话题页伪装成 Claude Code CLI 界面：只保留话题列表 / 帖子内容，图片以 [image] 占位，并穿插模拟的 tool use 输出
+// @version      0.4.0
+// @description  将 NGA 分区话题列表页与话题页伪装成 Claude Code CLI 界面：只保留话题列表 / 帖子内容，表情原样显示，图片以 [image] 占位，并穿插模拟的 tool use 输出
 // @author       nga-fish
 // @match        *://bbs.nga.cn/thread.php*
 // @match        *://bbs.nga.cn/read.php*
@@ -220,10 +220,19 @@
   }
 
   // 不用 URLSearchParams：NGA 的 key= 参数是 GBK 百分号编码，重新序列化会被破坏
-  function pageUrl(n) {
-    const q = location.search.replace(/^\?/, '').split('&').filter((p) => p && !/^page=/.test(p));
+  function pageUrl(n, drop) {
+    const skip = new Set(['page', ...(drop || [])]);
+    const q = location.search.replace(/^\?/, '').split('&').filter((p) => p && !skip.has(p.split('=')[0]));
     if (n > 1) q.push('page=' + n);
     return location.origin + location.pathname + (q.length ? '?' + q.join('&') : '');
+  }
+
+  // 原站「只看作者」：read.php?tid=&authorid=<uid>
+  function authorFilterUrl(uid) {
+    const q = location.search.replace(/^\?/, '').split('&')
+      .filter((p) => p && !/^(?:page|authorid)=/.test(p));
+    q.push('authorid=' + uid);
+    return location.origin + location.pathname + '?' + q.join('&');
   }
 
   /* ------------------------------------------------------------------ */
@@ -429,6 +438,10 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
 #cc-root .cc-u { text-decoration: underline; }
 #cc-root .cc-postres + .cc-postres > .cc-body { padding-top: var(--line); }
 #cc-root .cc-post-c { white-space: pre-wrap; overflow-wrap: anywhere; }
+#cc-root .cc-smile {
+  display: inline-block; height: 1.15em; width: auto; max-width: 8em;
+  vertical-align: -0.2em; margin: 0 1px;
+}
 #cc-root .cc-quote {
   display: block; margin: 2px 0; padding-left: 1ch;
   border-left: 2px solid var(--meta); color: var(--dim); white-space: pre-wrap;
@@ -639,8 +652,30 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
     'data-src': src || null,
   }, '[image]');
 
+  // NGA 表情由 [s:包名:名字] 渲染成 <img class="smile_包名">，地址固定在 /post/smile/。
+  // 勋章（medalimg）和 copyChk 用的 about:blank 隐藏图不是正文内容。
+  function isSmile(img) {
+    const cls = img.className || '';
+    if (/(?:^|\s)smile(?:_|\s|$)/.test(cls)) return true;
+    const src = [img.getAttribute('src'), img.getAttribute('data-src'), img.getAttribute('data-srcorg'), img.getAttribute('data-srclazy')]
+      .filter(Boolean).join(' ');
+    return /\/post\/smile\//i.test(src);
+  }
+
+  function smileNode(img) {
+    const src = imgSource(img) || (img.getAttribute('src') || '').trim();
+    const name = (img.getAttribute('alt') || img.getAttribute('title') || '').trim();
+    return h('img', {
+      class: 'cc-smile',
+      src: src || null,
+      alt: name,
+      title: name || null,
+      referrerpolicy: 'no-referrer-when-downgrade',
+    });
+  }
+
   // 页面脚本没来得及把 UBB 渲染成 HTML 时的兜底
-  const UBB_TOKEN = /\[img\]\s*([^[\]\s]+?)\s*\[\/img\]|\[s:[^\]:]+:([^\]]+)\]/gi;
+  const UBB_TOKEN = /\[img\]\s*([^[\]\s]+?)\s*\[\/img\]|\[s:([^\]]+)\]/gi;
   const UBB_TAG = /\[\/?(?:b|i|u|del|color|size|font|align|url|quote|collapse|h|list|\*|table|tr|td|pid|uid|tid)(?:=[^\]]*)?\]/gi;
 
   function appendText(out, raw) {
@@ -655,7 +690,12 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
     UBB_TOKEN.lastIndex = 0;
     while ((m = UBB_TOKEN.exec(s))) {
       if (m.index > last) out.append(s.slice(last, m.index).replace(UBB_TAG, ''));
-      out.append(m[1] ? imgPlaceholder(resolveImg(m[1])) : h('span', { class: 'cc-dim' }, `[${m[2]}]`));
+      if (m[1]) out.append(imgPlaceholder(resolveImg(m[1])));
+      else {
+        const parts = m[2].split(':');
+        const name = (parts.length > 1 ? parts.slice(1).join(':') : parts[0]).trim();
+        out.append(h('span', { class: 'cc-dim' }, `[${name || '表情'}]`));
+      }
       last = UBB_TOKEN.lastIndex;
     }
     if (last < s.length) out.append(s.slice(last).replace(UBB_TAG, ''));
@@ -685,7 +725,12 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
       if (tag === 'BR') {
         out.append('\n');
       } else if (tag === 'IMG') {
-        out.append(imgPlaceholder(imgSource(n)));
+        if (n.classList.contains('medalimg')) continue;
+        if (isSmile(n)) out.append(smileNode(n));
+        else {
+          const src = imgSource(n);
+          if (src) out.append(imgPlaceholder(src));
+        }
       } else if (tag === 'VIDEO' || tag === 'AUDIO') {
         const s = n.matches('[src]') ? n : n.querySelector('[src]');
         const u = s ? resolveImg(s.getAttribute('src')) : '';
@@ -758,7 +803,7 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
     const out = h('div', { class: 'cc-post-c' });
     walk(el, out);
     tidy(out);
-    if (!out.textContent.trim() && !out.querySelector('.cc-img')) {
+    if (!out.textContent.trim() && !out.querySelector('.cc-img, .cc-smile')) {
       out.textContent = '';
       out.append(h('span', { class: 'cc-dim' }, '(No content)'));
     }
@@ -984,10 +1029,19 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
     let mode = 0;
     const modeEl = h('span', null, MODES[0].text);
     const hints = h('div', { class: 'cc-hints' }, modeEl, h('span', null, ''));
-    const shortcuts = h('div', { class: 'cc-shortcuts', hidden: true },
-      '! for bash mode', '/ for commands', 'shift + tab to cycle modes',
+    const shortcutLines = [
+      ['!', 'bash 模式'],
+      ['/', '输入命令'],
+      ['shift + tab', '切换模式'],
       ...(opts.shortcuts || []),
-      '← / → 翻页', 'n / p 翻页', 'g / G 顶部 / 底部', 'esc 清空 / 退出输入', '? 关闭帮助');
+      ['← / →', '翻页'],
+      ['n / p', '翻页'],
+      ['g / G', '顶部 / 底部'],
+      ['esc', '清空输入 / 退出输入'],
+      ['?', '打开 / 关闭快捷键'],
+    ];
+    const shortcuts = h('div', { class: 'cc-shortcuts', hidden: true },
+      shortcutLines.map(([key, desc]) => `${key}  ${desc}`));
 
     function cycleMode() {
       mode = (mode + 1) % MODES.length;
@@ -1034,9 +1088,18 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
       ['/help', ['/help'], '显示本帮助', () => showHelp()],
     ];
 
+    function helpLine(label, desc) {
+      return [h('span', { class: 'cc-code' }, label.padEnd(16)), h('span', { class: 'cc-dim' }, desc)];
+    }
+
     function showHelp() {
-      append(tool('', 'Help', null, commands.map(([label, , desc]) =>
-        [h('span', { class: 'cc-code' }, label.padEnd(16)), h('span', { class: 'cc-dim' }, desc)])));
+      append(tool('', 'Help', null, [
+        h('span', { class: 'cc-b' }, 'Commands'),
+        ...commands.map(([label, , desc]) => helpLine(label, desc)),
+        '\u00a0',
+        h('span', { class: 'cc-b' }, 'Shortcuts'),
+        ...shortcutLines.map(([key, desc]) => helpLine(key, desc)),
+      ]));
     }
 
     function run(raw) {
@@ -1312,11 +1375,30 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
       if (fid) location.href = location.origin + '/thread.php?fid=' + fid;
       else history.back();
     };
+    const authorOn = /[?&]authorid=\d+/.test(location.search);
+    const opUid = (() => {
+      const a = document.getElementById('postauthor0');
+      const m = a && /[?&]uid=(\d+)/.exec(a.getAttribute('href') || '');
+      return m ? m[1] : '';
+    })();
+    const onlyAuthor = () => {
+      if (authorOn) {
+        say('正在显示全部回复…');
+        location.href = pageUrl(1, ['authorid']);
+        return;
+      }
+      if (!opUid) return say('找不到楼主，无法只看作者。', 'err');
+      say('正在只看楼主…');
+      location.href = authorFilterUrl(opUid);
+    };
     const root = mountShell(s, {
       paging,
       items,
       shortcuts: ['j / k 切换楼层', 'u 返回列表'],
-      commands: [['/back, /b', ['/back', '/b'], '返回话题列表', back]],
+      commands: [
+        ['/back, /b', ['/back', '/b'], '返回话题列表', back],
+        ['/oa', ['/oa'], authorOn ? '取消只看楼主，显示全部回复' : '只看楼主（再次输入恢复全部）', onlyAuthor],
+      ],
       keys: { u: back },
     });
     setupImagePreview(root);
