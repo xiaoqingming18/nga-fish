@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NGA 摸鱼优化
 // @namespace    https://github.com/nga-fish
-// @version      0.4.1
+// @version      0.5.0
 // @description  将 NGA 分区话题列表页与话题页伪装成 Claude Code CLI 界面：只保留话题列表 / 帖子内容，表情原样显示，图片以 [image] 占位，并穿插模拟的 tool use 输出
 // @author       nga-fish
 // @match        *://bbs.nga.cn/thread.php*
@@ -455,9 +455,18 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
 }
 #cc-root .cc-preview[hidden] { display: none; }
 #cc-root .cc-preview img {
-  display: block; max-width: min(60vw, 720px); max-height: 70vh; width: auto; height: auto;
+  display: block; width: auto; height: auto;
+  transition: max-width 0.2s ease, max-height 0.2s ease;
 }
+#cc-root .cc-preview.cc-zoom-0 img { max-width: 30vw; max-height: 40vh; }
+#cc-root .cc-preview.cc-zoom-1 img { max-width: 50vw; max-height: 60vh; }
+#cc-root .cc-preview.cc-zoom-2 img { max-width: 85vw; max-height: 85vh; }
 #cc-root .cc-preview img[hidden] { display: none; }
+#cc-root .cc-zoom-indicator {
+  position: absolute; bottom: 8px; right: 8px; padding: 2px 6px;
+  background: rgba(0,0,0,0.7); color: var(--dim); font-size: 11px;
+  border-radius: 3px; pointer-events: none;
+}
 #cc-root a { cursor: pointer; }
 #cc-root a.cc-tt { color: var(--fg); }
 #cc-root a.cc-tt.cc-hot { color: var(--claude); }
@@ -1202,15 +1211,21 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
     return root;
   }
 
-  // 鼠标移入 [image] 占位符时悬浮展示原图
+  // 鼠标移入 [image] 占位符时悬浮展示图片，单击切换缩放档位
   function setupImagePreview(root) {
     const note = h('div', { class: 'cc-dim' }, 'loading…');
     const img = h('img', { alt: '', referrerpolicy: 'no-referrer-when-downgrade' });
-    const box = h('div', { class: 'cc-preview', hidden: true }, note, img);
+    const zoomIndicator = h('div', { class: 'cc-zoom-indicator' }, '1x');
+    const box = h('div', { class: 'cc-preview cc-zoom-0', hidden: true }, note, img, zoomIndicator);
     root.append(box);
 
+    // 使用 WeakMap 存储每个 [image] 元素的缩放档位（0/1/2）
+    const zoomLevels = new WeakMap();
     let cur = null;
     let lastEvt = null;
+
+    const ZOOM_LABELS = ['1x', '2x', '原图'];
+
     const place = () => {
       if (!lastEvt) return;
       const pad = 16;
@@ -1223,10 +1238,20 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
       box.style.left = x + 'px';
       box.style.top = y + 'px';
     };
+
     const hide = () => {
+      if (cur) zoomLevels.delete(cur); // 清除档位状态
       cur = null;
       box.hidden = true;
       img.removeAttribute('src');
+      box.className = 'cc-preview cc-zoom-0';
+    };
+
+    const updateZoom = (level) => {
+      box.className = `cc-preview cc-zoom-${level}`;
+      zoomIndicator.textContent = ZOOM_LABELS[level];
+      // 档位切换后重新定位，避免图片变大后溢出屏幕
+      setTimeout(place, 10);
     };
 
     root.addEventListener('mouseover', (e) => {
@@ -1235,9 +1260,13 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
       cur = a;
       lastEvt = e;
       const src = a.getAttribute('data-src');
+      const level = zoomLevels.get(a) || 0; // 读取档位，默认 0
+
       img.hidden = true;
       note.hidden = false;
       note.textContent = src ? 'loading…' : '[无法获取图片地址]';
+      updateZoom(level);
+
       img.onload = () => {
         if (cur !== a) return;
         note.hidden = true;
@@ -1251,14 +1280,32 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
       box.hidden = false;
       place();
     });
+
     root.addEventListener('mousemove', (e) => {
       if (!cur) return;
       lastEvt = e;
       place();
     });
+
     root.addEventListener('mouseout', (e) => {
       if (cur && !(e.relatedTarget && cur.contains(e.relatedTarget))) hide();
     });
+
+    // 单击 [image] 切换档位：0 → 1 → 2 → 2（最大档保持）
+    root.addEventListener('click', (e) => {
+      const a = e.target.closest && e.target.closest('a.cc-img');
+      if (!a || a !== cur) return;
+
+      // 阻止默认跳转行为，但保留 Ctrl/Cmd + 单击 和 中键单击
+      if (e.ctrlKey || e.metaKey || e.button === 1) return;
+      e.preventDefault();
+
+      const level = zoomLevels.get(a) || 0;
+      const newLevel = Math.min(level + 1, 2); // 最大档位为 2
+      zoomLevels.set(a, newLevel);
+      updateZoom(newLevel);
+    }, true); // 捕获阶段处理，优先于其他点击事件
+
     window.addEventListener('scroll', () => { if (cur) hide(); }, { passive: true });
   }
 
