@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NGA 摸鱼优化
 // @namespace    https://github.com/nga-fish
-// @version      0.5.0
+// @version      0.6.0
 // @description  将 NGA 分区话题列表页与话题页伪装成 Claude Code CLI 界面：只保留话题列表 / 帖子内容，表情原样显示，图片以 [image] 占位，并穿插模拟的 tool use 输出
 // @author       nga-fish
 // @match        *://bbs.nga.cn/thread.php*
@@ -30,10 +30,41 @@
   const gmGet = (k, d) => (typeof GM_getValue === 'function' ? GM_getValue(k, d) : d);
   const gmSet = (k, v) => { if (typeof GM_setValue === 'function') GM_setValue(k, v); };
 
+  // 图片缩放档位默认配置（视口宽度百分比）
+  const DEFAULT_ZOOM_CONFIG = { zoom0: 30, zoom1: 50, zoom2: 85 };
+
   const enabled = gmGet('enabled', true);
   if (typeof GM_registerMenuCommand === 'function') {
     GM_registerMenuCommand(enabled ? '关闭摸鱼模式' : '开启摸鱼模式', () => {
       gmSet('enabled', !enabled);
+      location.reload();
+    });
+
+    // 自定义图片缩放档位菜单
+    GM_registerMenuCommand('自定义图片缩放档位', () => {
+      const current = gmGet('zoomConfig', DEFAULT_ZOOM_CONFIG);
+      const hint = `当前档位: ${current.zoom0}%, ${current.zoom1}%, ${current.zoom2}%\n\n` +
+                   `请输入新的三档缩放比例（相对于视口宽度）\n` +
+                   `用逗号或空格分隔，例如：30,50,85 或 20 40 80\n` +
+                   `要求：1-100的整数，且递增`;
+      const input = prompt(hint, `${current.zoom0},${current.zoom1},${current.zoom2}`);
+
+      if (!input) return; // 用户取消
+
+      const nums = input.split(/[,\s]+/).map(s => parseInt(s.trim(), 10));
+      
+      // 校验：必须是三个 1-100 的整数，且递增
+      if (nums.length !== 3 || nums.some(n => isNaN(n) || n < 1 || n > 100)) {
+        alert('输入格式错误！需要三个 1-100 的整数。');
+        return;
+      }
+      if (nums[0] >= nums[1] || nums[1] >= nums[2]) {
+        alert('三个档位必须递增！例如：20,50,80');
+        return;
+      }
+
+      gmSet('zoomConfig', { zoom0: nums[0], zoom1: nums[1], zoom2: nums[2] });
+      alert(`设置已保存：${nums[0]}%, ${nums[1]}%, ${nums[2]}%\n\n刷新页面后生效。`);
       location.reload();
     });
   }
@@ -377,6 +408,7 @@
   /* 样式                                                                */
   /* ------------------------------------------------------------------ */
 
+  const zoomConfig = gmGet('zoomConfig', DEFAULT_ZOOM_CONFIG);
   const CSS = `
 html.cc-on, html.cc-on body {
   background: #1a1a1a !important; margin: 0 !important; padding: 0 !important;
@@ -458,9 +490,9 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
   display: block; width: auto; height: auto;
   transition: max-width 0.2s ease, max-height 0.2s ease;
 }
-#cc-root .cc-preview.cc-zoom-0 img { max-width: 30vw; max-height: 40vh; }
-#cc-root .cc-preview.cc-zoom-1 img { max-width: 50vw; max-height: 60vh; }
-#cc-root .cc-preview.cc-zoom-2 img { max-width: 85vw; max-height: 85vh; }
+#cc-root .cc-preview.cc-zoom-0 img { max-width: ${zoomConfig.zoom0}vw; max-height: ${Math.round(zoomConfig.zoom0 * 1.33)}vh; }
+#cc-root .cc-preview.cc-zoom-1 img { max-width: ${zoomConfig.zoom1}vw; max-height: ${Math.round(zoomConfig.zoom1 * 1.2)}vh; }
+#cc-root .cc-preview.cc-zoom-2 img { max-width: ${zoomConfig.zoom2}vw; max-height: ${zoomConfig.zoom2}vh; }
 #cc-root .cc-preview img[hidden] { display: none; }
 #cc-root .cc-zoom-indicator {
   position: absolute; bottom: 8px; right: 8px; padding: 2px 6px;
@@ -1224,7 +1256,8 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
     let cur = null;
     let lastEvt = null;
 
-    const ZOOM_LABELS = ['1x', '2x', '原图'];
+    const config = gmGet('zoomConfig', DEFAULT_ZOOM_CONFIG);
+    const ZOOM_LABELS = [`${config.zoom0}%`, `${config.zoom1}%`, `${config.zoom2}%`];
 
     const place = () => {
       if (!lastEvt) return;
