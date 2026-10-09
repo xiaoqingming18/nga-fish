@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NGA 摸鱼优化
 // @namespace    https://github.com/nga-fish
-// @version      0.6.0
+// @version      0.8.2
 // @description  将 NGA 分区话题列表页与话题页伪装成 Claude Code CLI 界面：只保留话题列表 / 帖子内容，表情原样显示，图片以 [image] 占位，并穿插模拟的 tool use 输出
 // @author       nga-fish
 // @match        *://bbs.nga.cn/thread.php*
@@ -32,6 +32,13 @@
 
   // 图片缩放档位默认配置（视口宽度百分比）
   const DEFAULT_ZOOM_CONFIG = { zoom0: 30, zoom1: 50, zoom2: 85 };
+  
+  // 视频预览默认配置（相对于原视频的百分比）
+  const DEFAULT_VIDEO_CONFIG = { 
+    posterScale: 40,  // 封面：原尺寸的 40%
+    videoScale: 80,   // 播放：原尺寸的 80%
+    autoMute: true    // 默认静音播放
+  };
 
   const enabled = gmGet('enabled', true);
   if (typeof GM_registerMenuCommand === 'function') {
@@ -65,6 +72,51 @@
 
       gmSet('zoomConfig', { zoom0: nums[0], zoom1: nums[1], zoom2: nums[2] });
       alert(`设置已保存：${nums[0]}%, ${nums[1]}%, ${nums[2]}%\n\n刷新页面后生效。`);
+      location.reload();
+    });
+    
+    // 自定义视频预览设置菜单
+    GM_registerMenuCommand('自定义视频预览设置', () => {
+      const current = gmGet('videoConfig', DEFAULT_VIDEO_CONFIG);
+      const muteText = current.autoMute ? '是' : '否';
+      const hint = `当前配置: 封面 ${current.posterScale}%, 播放 ${current.videoScale}%, 静音: ${muteText}\n\n` +
+                   `请输入新的配置（相对于原视频尺寸的百分比）\n` +
+                   `格式：封面比例,播放比例,是否静音\n` +
+                   `例如：40,80,是  或  30,70,否\n` +
+                   `要求：比例为 1-100 的整数`;
+      const input = prompt(hint, `${current.posterScale},${current.videoScale},${muteText}`);
+      
+      if (!input) return;
+      
+      const parts = input.split(/[,，\s]+/).map(s => s.trim());
+      if (parts.length !== 3) {
+        alert('输入格式错误！需要三个值：封面比例,播放比例,是否静音');
+        return;
+      }
+      
+      const [poster, video, mute] = parts;
+      const nums = [poster, video].map(s => parseInt(s, 10));
+      
+      if (nums.some(n => isNaN(n) || n < 1 || n > 100)) {
+        alert('比例必须是 1-100 的整数！');
+        return;
+      }
+      
+      const muteMap = { '是': true, '否': false, '1': true, '0': false, 'true': true, 'false': false };
+      const autoMute = muteMap[mute.toLowerCase()];
+      
+      if (autoMute === undefined) {
+        alert('静音设置必须是：是/否 或 1/0');
+        return;
+      }
+      
+      gmSet('videoConfig', {
+        posterScale: nums[0],
+        videoScale: nums[1],
+        autoMute
+      });
+      
+      alert(`设置已保存：\n封面 ${nums[0]}%\n播放 ${nums[1]}%\n静音: ${autoMute ? '是' : '否'}\n\n刷新页面后生效。`);
       location.reload();
     });
   }
@@ -481,6 +533,8 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
 #cc-root a.cc-link { color: var(--code); text-decoration: underline; }
 #cc-root a.cc-img { color: var(--code); cursor: zoom-in; }
 #cc-root a.cc-img:hover { background: rgba(177,185,249,.18); }
+#cc-root a.cc-video { color: var(--bash); cursor: pointer; }
+#cc-root a.cc-video:hover { background: rgba(253,93,177,.18); }
 #cc-root .cc-preview {
   position: fixed; z-index: 2147483647; pointer-events: none;
   padding: 4px; background: #222 !important; border: 1px solid var(--border); border-radius: 6px;
@@ -495,6 +549,24 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
 #cc-root .cc-preview.cc-zoom-2 img { max-width: ${zoomConfig.zoom2}vw; max-height: ${zoomConfig.zoom2}vh; }
 #cc-root .cc-preview img[hidden] { display: none; }
 #cc-root .cc-zoom-indicator {
+  position: absolute; bottom: 8px; right: 8px; padding: 2px 6px;
+  background: rgba(0,0,0,0.7); color: var(--dim); font-size: 11px;
+  border-radius: 3px; pointer-events: none;
+}
+#cc-root .cc-video-preview {
+  position: fixed; z-index: 2147483647; pointer-events: auto;
+  padding: 4px; background: #222 !important; border: 1px solid var(--border); border-radius: 6px;
+}
+#cc-root .cc-video-preview[hidden] { display: none; }
+#cc-root .cc-video-preview img {
+  display: block; width: auto; height: auto; cursor: pointer;
+}
+#cc-root .cc-video-preview img[hidden] { display: none; }
+#cc-root .cc-video-preview video {
+  display: block; width: auto; height: auto; background: #000;
+}
+#cc-root .cc-video-preview video[hidden] { display: none; }
+#cc-root .cc-video-indicator {
   position: absolute; bottom: 8px; right: 8px; padding: 2px 6px;
   background: rgba(0,0,0,0.7); color: var(--dim); font-size: 11px;
   border-radius: 3px; pointer-events: none;
@@ -773,20 +845,46 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
           if (src) out.append(imgPlaceholder(src));
         }
       } else if (tag === 'VIDEO' || tag === 'AUDIO') {
-        const s = n.matches('[src]') ? n : n.querySelector('[src]');
-        const u = s ? resolveImg(s.getAttribute('src')) : '';
-        out.append(h('a', { class: 'cc-link', href: u || null, target: u ? '_blank' : null, rel: 'noopener' },
-          tag === 'AUDIO' ? '[audio]' : '[video]'));
+        if (tag === 'VIDEO') {
+          const src = n.src || n.getAttribute('src');
+          const poster = n.poster || n.getAttribute('poster') || (src ? src + '.medium.jpg' : '');
+          out.append(h('a', {
+            class: 'cc-video',
+            href: src || null,
+            target: src ? '_blank' : null,
+            rel: 'noopener',
+            'data-video-src': src || null,
+            'data-video-poster': poster || null
+          }, '[video]'));
+        } else {
+          const s = n.matches('[src]') ? n : n.querySelector('[src]');
+          const u = s ? resolveImg(s.getAttribute('src')) : '';
+          out.append(h('a', { class: 'cc-link', href: u || null, target: u ? '_blank' : null, rel: 'noopener' }, '[audio]'));
+        }
       } else if (n.classList.contains('quote') || tag === 'BLOCKQUOTE') {
         const q = h('div', { class: 'cc-quote' });
         walk(n, q);
         tidy(q);
         if (q.childNodes.length) out.append(q);
       } else if (n.classList.contains('collapse_btn')) {
+        // 渲染折叠标题
         const c = n.cloneNode(true);
         c.querySelectorAll('button').forEach((b) => b.remove());
         nl(out);
         out.append(h('span', { class: 'cc-dim' }, '▾ ' + (text(c) || '折叠内容')), '\n');
+        
+        // 查找折叠内容：根据实际调研，collapse_content 是 collapse_btn 的紧邻兄弟元素
+        const collapseContent = n.nextElementSibling;
+        if (collapseContent && collapseContent.classList.contains('collapse_content')) {
+          // 克隆内容，移除可能阻止渲染的隐藏属性
+          const contentClone = collapseContent.cloneNode(true);
+          contentClone.style.display = '';
+          contentClone.removeAttribute('hidden');
+          
+          // 渲染折叠内容
+          walk(contentClone, out);
+          nl(out);
+        }
       } else if (tag === 'A') {
         if (n.querySelector('img, video, audio')) {
           walk(n, out);
@@ -803,6 +901,18 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
           out.append(h('span', { class: 'cc-dim' }, '─'.repeat(24)));
         } else if (tag === 'LI') {
           out.append('• ');
+          walk(n, out);
+        } else if (tag === 'TABLE') {
+          // 表格边框（CLI 风格）
+          nl(out);
+          out.append(h('span', { class: 'cc-dim' }, '┌' + '─'.repeat(60) + '┐'), '\n');
+          walk(n, out);
+          nl(out);
+          out.append(h('span', { class: 'cc-dim' }, '└' + '─'.repeat(60) + '┘'));
+        } else if (tag === 'TR') {
+          // 表格行前缀
+          nl(out);
+          out.append(h('span', { class: 'cc-dim' }, '│ '));
           walk(n, out);
         } else if (tag === 'TD' || tag === 'TH') {
           if (n.previousElementSibling) out.append(h('span', { class: 'cc-dim' }, ' │ '));
@@ -1342,6 +1452,166 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
     window.addEventListener('scroll', () => { if (cur) hide(); }, { passive: true });
   }
 
+  // 视频预览：鼠标移入显示封面，点击播放视频，移出重置状态
+  function setupVideoPreview(root) {
+    const config = gmGet('videoConfig', DEFAULT_VIDEO_CONFIG);
+    
+    const note = h('div', { class: 'cc-dim' }, 'loading…');
+    const poster = h('img', { alt: '', referrerpolicy: 'no-referrer-when-downgrade' });
+    const video = h('video', { controls: true, referrerpolicy: 'no-referrer-when-downgrade' });
+    const indicator = h('div', { class: 'cc-video-indicator' }, '封面');
+    const box = h('div', { class: 'cc-video-preview', hidden: true }, note, poster, video, indicator);
+    root.append(box);
+    
+    let cur = null;
+    let lastEvt = null;
+    let isPlaying = false;
+    
+    const place = () => {
+      if (!lastEvt) return;
+      const pad = 16;
+      const w = box.offsetWidth;
+      const ht = box.offsetHeight;
+      let x = lastEvt.clientX + pad;
+      let y = lastEvt.clientY + pad;
+      if (x + w > window.innerWidth - 8) x = Math.max(8, lastEvt.clientX - pad - w);
+      if (y + ht > window.innerHeight - 8) y = Math.max(8, window.innerHeight - 8 - ht);
+      box.style.left = x + 'px';
+      box.style.top = y + 'px';
+    };
+    
+    const hide = () => {
+      cur = null;
+      isPlaying = false;
+      box.hidden = true;
+      poster.removeAttribute('src');
+      poster.hidden = false;
+      video.pause();
+      video.removeAttribute('src');
+      video.hidden = true;
+      note.hidden = true;
+    };
+    
+    const showPoster = (posterSrc) => {
+      note.hidden = false;
+      note.textContent = posterSrc ? 'loading…' : '[无封面]';
+      poster.hidden = true;
+      video.hidden = true;
+      indicator.textContent = '封面';
+      
+      if (posterSrc) {
+        poster.onload = () => {
+          if (cur) {
+            note.hidden = true;
+            poster.hidden = false;
+            // 根据配置比例设置封面尺寸
+            const scale = config.posterScale / 100;
+            poster.style.maxWidth = (poster.naturalWidth * scale) + 'px';
+            poster.style.maxHeight = (poster.naturalHeight * scale) + 'px';
+            place();
+          }
+        };
+        poster.onerror = () => {
+          if (cur) note.textContent = '[封面加载失败]';
+        };
+        poster.src = posterSrc;
+      }
+      
+      box.hidden = false;
+      place();
+    };
+    
+    const playVideo = (videoSrc) => {
+      poster.hidden = true;
+      note.textContent = 'loading…';
+      note.hidden = false;
+      video.hidden = true;
+      video.muted = config.autoMute;
+      video.src = videoSrc;
+      indicator.textContent = config.autoMute ? '播放中 (静音)' : '播放中';
+      
+      video.onloadedmetadata = () => {
+        if (cur && isPlaying) {
+          // 根据配置比例设置视频尺寸
+          const scale = config.videoScale / 100;
+          video.style.maxWidth = (video.videoWidth * scale) + 'px';
+          video.style.maxHeight = (video.videoHeight * scale) + 'px';
+          note.hidden = true;
+          video.hidden = false;
+          place();
+        }
+      };
+      
+      video.play().catch((err) => {
+        console.error('Video play failed:', err);
+        if (cur) {
+          note.textContent = '[播放失败]';
+          note.hidden = false;
+          video.hidden = true;
+        }
+      });
+      
+      isPlaying = true;
+    };
+    
+    root.addEventListener('mouseover', (e) => {
+      const a = e.target.closest && e.target.closest('a.cc-video');
+      if (!a || a === cur) return;
+      cur = a;
+      lastEvt = e;
+      isPlaying = false;
+      const posterSrc = a.getAttribute('data-video-poster');
+      showPoster(posterSrc);
+    });
+    
+    root.addEventListener('mousemove', (e) => {
+      if (!cur) return;
+      lastEvt = e;
+      place();
+    });
+    
+    root.addEventListener('mouseout', (e) => {
+      if (cur && !(e.relatedTarget && (cur.contains(e.relatedTarget) || box.contains(e.relatedTarget)))) {
+        hide();
+      }
+    });
+    
+    box.addEventListener('mouseout', (e) => {
+      if (!e.relatedTarget || (!box.contains(e.relatedTarget) && !cur?.contains(e.relatedTarget))) {
+        hide();
+      }
+    });
+    
+    // 阻止占位符的默认跳转行为，并直接播放视频
+    root.addEventListener('click', (e) => {
+      const videoLink = e.target.closest && e.target.closest('a.cc-video');
+      if (!videoLink) return;
+      
+      // 保留 Ctrl/Cmd + 单击 和 中键单击
+      if (e.ctrlKey || e.metaKey || e.button === 1) return;
+      
+      // 阻止默认跳转
+      e.preventDefault();
+      e.stopPropagation();
+      
+      // 如果预览框未显示，先触发 mouseover 显示封面
+      if (!cur || cur !== videoLink) {
+        cur = videoLink;
+        lastEvt = e;
+        const posterSrc = videoLink.getAttribute('data-video-poster');
+        showPoster(posterSrc);
+      }
+      
+      // 直接播放视频
+      if (!isPlaying) {
+        const videoSrc = videoLink.getAttribute('data-video-src');
+        if (videoSrc) playVideo(videoSrc);
+      }
+    }, true); // 捕获阶段处理，优先于其他点击事件
+    
+    window.addEventListener('scroll', () => { if (cur) hide(); }, { passive: true });
+  }
+
   /* ------------------------------------------------------------------ */
   /* 列表页                                                              */
   /* ------------------------------------------------------------------ */
@@ -1387,6 +1657,17 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
   /* ------------------------------------------------------------------ */
 
   function bootRead(container) {
+    // 预加载所有折叠内容（NGA 使用懒加载，需要触发加载）
+    const collapseButtons = container.querySelectorAll('.collapse_btn button[name="collapseSwitchButton"]');
+    collapseButtons.forEach((btn) => {
+      // 模拟点击以触发内容加载
+      try {
+        btn.click();
+      } catch (e) {
+        // 忽略点击错误
+      }
+    });
+    
     // 先提取数据再改动页面：提取失败时原页面保持完整
     const posts = parsePosts(container);
     if (!posts.length) throw new Error('no posts');
@@ -1492,6 +1773,7 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
       keys: { u: back },
     });
     setupImagePreview(root);
+    setupVideoPreview(root);
 
     // 带 #l12 这类楼层锚点进入时定位到对应楼层
     const lm = /^#l(\d+)$/.exec(location.hash);
