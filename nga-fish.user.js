@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NGA 摸鱼优化
 // @namespace    https://github.com/nga-fish
-// @version      0.8.2
+// @version      0.9.0
 // @description  将 NGA 分区话题列表页与话题页伪装成 Claude Code CLI 界面：只保留话题列表 / 帖子内容，表情原样显示，图片以 [image] 占位，并穿插模拟的 tool use 输出
 // @author       nga-fish
 // @match        *://bbs.nga.cn/thread.php*
@@ -14,6 +14,11 @@
 // @match        *://nga.178.com/read.php*
 // @match        *://g.nga.cn/thread.php*
 // @match        *://g.nga.cn/read.php*
+// @match        *://bbs.nga.cn/misc/adpage_insert_*
+// @match        *://ngabbs.com/misc/adpage_insert_*
+// @match        *://www.ngabbs.com/misc/adpage_insert_*
+// @match        *://nga.178.com/misc/adpage_insert_*
+// @match        *://g.nga.cn/misc/adpage_insert_*
 // @run-at       document-start
 // @noframes
 // @grant        GM_getValue
@@ -24,6 +29,19 @@
 
 (function () {
   'use strict';
+
+  // 广告页拦截：自动跳过 NGA 翻页广告
+  if (location.href.includes('/misc/adpage_insert_')) {
+    const match = location.href.match(/adpage_insert[^?]*\?(.+)/);
+    if (match) {
+      const targetUrl = match[1];
+      // 验证目标 URL 是否是 NGA 官方域名
+      if (targetUrl.match(/^https?:\/\/([a-z0-9]+\.)?(bbs\.nga\.cn|ngabbs\.com|nga\.178\.com|g\.nga\.cn)/)) {
+        location.replace(targetUrl);
+        throw new Error('Redirecting from ad page'); // 终止脚本执行
+      }
+    }
+  }
 
   const TAG = '[NGA 摸鱼优化]';
   const BYPASS_KEY = 'nga-fish-bypass';
