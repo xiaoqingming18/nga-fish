@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NGA 摸鱼优化
 // @namespace    https://github.com/nga-fish
-// @version      0.9.0
+// @version      0.9.1
 // @description  将 NGA 分区话题列表页与话题页伪装成 Claude Code CLI 界面：只保留话题列表 / 帖子内容，表情原样显示，图片以 [image] 占位，并穿插模拟的 tool use 输出
 // @author       nga-fish
 // @match        *://bbs.nga.cn/thread.php*
@@ -1674,6 +1674,25 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
   /* 话题页                                                              */
   /* ------------------------------------------------------------------ */
 
+  // 从原始 DOM 提取楼主 UID（在元素被删除前调用）
+  function extractOpUid() {
+    const nodes = [
+      document.getElementById('postauthor0'),
+      document.querySelector('#post1strow0 a[href*="uid="], #posterinfo0 a[href*="uid="]'),
+      document.querySelector('a[name="l0"]') && document.querySelector('a[name="l0"]').closest('tr, .postrow, table')
+        && document.querySelector('a[name="l0"]').closest('tr, .postrow, table').querySelector('a[href*="uid="]'),
+    ];
+
+    for (const a of nodes) {
+      if (!a) continue;
+      const m = /[?&]uid=(\d+)/.exec(a.href || a.getAttribute('href') || '')
+        || /userClick\(\s*event\s*,\s*"(\d+)"/.exec(a.getAttribute('onclick') || '');
+      if (m) return m[1];
+    }
+
+    return null;
+  }
+
   function bootRead(container) {
     // 预加载所有折叠内容（NGA 使用懒加载，需要触发加载）
     const collapseButtons = container.querySelectorAll('.collapse_btn button[name="collapseSwitchButton"]');
@@ -1694,6 +1713,9 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
     const tidM = /[?&]tid=(\d+)/.exec(location.search);
     const tid = tidM ? tidM[1] : '0';
     const title = topicTitle();
+
+    // 在删除元素前提取楼主 UID
+    const opUidValue = extractOpUid();
 
     prepare(container);
     container.querySelectorAll(READ_STRIP).forEach((el) => el.remove());
@@ -1755,22 +1777,8 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
       else history.back();
     };
     const authorOn = /[?&]authorid=\d+/.test(location.search);
-    // 楼主链接由页面脚本异步写入，而且可能不在 postcontent 所在的行里，所以执行时再找
-    const opUid = () => {
-      const nodes = [
-        document.getElementById('postauthor0'),
-        document.querySelector('#post1strow0 a[href*="uid="], #posterinfo0 a[href*="uid="]'),
-        document.querySelector('a[name="l0"]') && document.querySelector('a[name="l0"]').closest('tr, .postrow, table')
-          && document.querySelector('a[name="l0"]').closest('tr, .postrow, table').querySelector('a[href*="uid="]'),
-      ];
-      for (const a of nodes) {
-        if (!a) continue;
-        const m = /[?&]uid=(\d+)/.exec(a.href || a.getAttribute('href') || '')
-          || /userClick\(\s*event\s*,\s*"(\d+)"/.exec(a.getAttribute('onclick') || '');
-        if (m) return m[1];
-      }
-      return '';
-    };
+    // 楼主 UID 已在页面改造前提取并缓存
+    const opUid = () => opUidValue || '';
     const onlyAuthor = () => {
       if (authorOn) {
         location.href = pageUrl(1, ['authorid']);
