@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NGA 摸鱼优化
 // @namespace    https://github.com/xiaoqingming18/nga-fish
-// @version      0.11.0
+// @version      0.11.1
 // @description  将 NGA 分区话题列表页与话题页伪装成 Claude Code CLI 界面：只保留话题列表 / 帖子内容，表情原样显示，图片以 [image] 占位，并穿插模拟的 tool use 输出
 // @author       xiaoqingming18
 // @homepage     https://github.com/xiaoqingming18/nga-fish
@@ -64,20 +64,23 @@
 
   // 代码块伪装程度默认配置
   const DEFAULT_DISGUISE_LEVEL = {
-    level: 2,         // 伪装等级：1=低（简洁），2=中（平衡），3=高（密集）
+    level: 3,         // 伪装等级：1-6，默认 3（中等）
     minFillers: 0,    // 最小穿插数（根据 level 自动计算）
     maxFillers: 2,    // 最大穿插数（根据 level 自动计算）
     fillerChance: 0.3 // 穿插概率（根据 level 自动计算）
   };
 
-  // 根据等级计算伪装参数
+  // 根据等级计算伪装参数（6 档）
   function getDisguiseParams(level) {
     const presets = {
-      1: { minFillers: 0, maxFillers: 1, fillerChance: 0.15 }, // 低：偶尔穿插
-      2: { minFillers: 0, maxFillers: 2, fillerChance: 0.30 }, // 中：适度穿插（默认）
-      3: { minFillers: 1, maxFillers: 3, fillerChance: 0.50 }  // 高：频繁穿插
+      1: { minFillers: 0, maxFillers: 0, fillerChance: 0.10 }, // 1档：极简，几乎无穿插
+      2: { minFillers: 0, maxFillers: 1, fillerChance: 0.20 }, // 2档：很少穿插
+      3: { minFillers: 0, maxFillers: 2, fillerChance: 0.35 }, // 3档：适度穿插（默认）
+      4: { minFillers: 1, maxFillers: 2, fillerChance: 0.50 }, // 4档：较多穿插
+      5: { minFillers: 1, maxFillers: 3, fillerChance: 0.65 }, // 5档：频繁穿插
+      6: { minFillers: 2, maxFillers: 4, fillerChance: 0.80 }  // 6档：极密集穿插
     };
-    return presets[level] || presets[2];
+    return presets[level] || presets[3];
   }
 
   const enabled = gmGet('enabled', true);
@@ -172,15 +175,21 @@
     // 代码块伪装程度菜单
     GM_registerMenuCommand('代码块伪装程度', () => {
       const config = gmGet('disguiseLevel', DEFAULT_DISGUISE_LEVEL);
-      const currentLevel = config.level || 2;
-      const levelNames = { 1: '低（简洁）', 2: '中（平衡）', 3: '高（密集）' };
+      const currentLevel = config.level || 3;
+      const levelNames = { 
+        1: '1档（极简）', 2: '2档（稀疏）', 3: '3档（适中）', 
+        4: '4档（丰富）', 5: '5档（密集）', 6: '6档（极密）' 
+      };
       
       const hint = `当前伪装程度: ${levelNames[currentLevel]}\n\n` +
                    `伪装程度控制代码块、工具调用等伪装输出的插入频率：\n\n` +
-                   `1 = 低（简洁）  - 偶尔穿插，适合快速浏览\n` +
-                   `2 = 中（平衡）  - 适度穿插，推荐设置\n` +
-                   `3 = 高（密集）  - 频繁穿插，最强伪装效果\n\n` +
-                   `请输入等级（1-3）：`;
+                   `1档（极简） - 几乎无穿插，极简模式\n` +
+                   `2档（稀疏） - 很少穿插，快速浏览\n` +
+                   `3档（适中） - 适度穿插，推荐设置 ★\n` +
+                   `4档（丰富） - 较多穿插，真实感强\n` +
+                   `5档（密集） - 频繁穿插，高度伪装\n` +
+                   `6档（极密） - 极密集穿插，最强伪装\n\n` +
+                   `请输入等级（1-6）：`;
       
       const input = prompt(hint, String(currentLevel));
       
@@ -188,8 +197,8 @@
       
       const level = parseInt(input.trim(), 10);
       
-      if (![1, 2, 3].includes(level)) {
-        alert('输入错误！等级必须是 1、2 或 3');
+      if (![1, 2, 3, 4, 5, 6].includes(level)) {
+        alert('输入错误！等级必须是 1-6 之间的整数');
         return;
       }
       
@@ -729,10 +738,14 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
   const results = (lines) => lines.map((ln, i) =>
     h('div', { class: 'cc-res' }, h('span', { class: 'cc-gut cc-dim' }, i === 0 ? '  ⎿  ' : ''), h('div', { class: 'cc-body' }, ln)));
 
-  const tool = (cls, name, arg, lines, status = 'ok') => block(cls,
-    dotRow(status === 'ok' ? 'cc-green' : status === 'err' ? 'cc-red' : 'cc-fg',
-      h('span', { class: 'cc-b' }, name), arg != null ? ['(', arg, ')'] : null),
-    results(lines));
+  const tool = (cls, name, arg, lines, status = 'ok') => {
+    // 如果是 Bash 命令且有参数，对参数进行高亮
+    const argContent = name === 'Bash' && arg ? highlightBash(arg) : arg;
+    return block(cls,
+      dotRow(status === 'ok' ? 'cc-green' : status === 'err' ? 'cc-red' : 'cc-fg',
+        h('span', { class: 'cc-b' }, name), argContent != null ? ['(', argContent, ')'] : null),
+      results(lines));
+  };
 
   const textBlock = (s, cls = '') => block(cls, dotRow('cc-fg', md(s)));
 
@@ -764,6 +777,29 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
       last = re.lastIndex;
     }
     if (last < code.length) out.push(code.slice(last));
+    return out;
+  }
+
+  // 高亮 Bash 命令（给命令名、选项、路径等添加颜色）
+  function highlightBash(cmd) {
+    const out = [];
+    // 匹配: 字符串、数字、选项（--xxx 或 -x）、路径、命令名
+    const re = /('(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")|(\b\d+\b)|(--?[\w-]+)|(\/[\w\/.~-]*|\.\/[\w\/.~-]*)|(\b(?:curl|git|gh|node|npm|sed|jq|sqlite3|grep|find|cat|ls|cd|mkdir|rm|mv|cp)\b)/g;
+    let last = 0;
+    let m;
+    while ((m = re.exec(cmd))) {
+      if (m.index > last) out.push(cmd.slice(last, m.index));
+      const [tok, str, num, opt, path, cmdName] = m;
+      let cls = null;
+      if (str) cls = 'cc-hl-str';
+      else if (num) cls = 'cc-hl-num';
+      else if (opt) cls = 'cc-code'; // 蓝紫色选项
+      else if (path) cls = 'cc-hl-str'; // 绿色路径
+      else if (cmdName) cls = 'cc-hl-fn'; // 蓝色命令名
+      out.push(cls ? h('span', { class: cls }, tok) : tok);
+      last = re.lastIndex;
+    }
+    if (last < cmd.length) out.push(cmd.slice(last));
     return out;
   }
 
