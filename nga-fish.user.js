@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NGA 摸鱼优化
 // @namespace    https://github.com/nga-fish
-// @version      0.9.1
+// @version      0.10.0
 // @description  将 NGA 分区话题列表页与话题页伪装成 Claude Code CLI 界面：只保留话题列表 / 帖子内容，表情原样显示，图片以 [image] 占位，并穿插模拟的 tool use 输出
 // @author       nga-fish
 // @match        *://bbs.nga.cn/thread.php*
@@ -135,6 +135,15 @@
       });
       
       alert(`设置已保存：\n封面 ${nums[0]}%\n播放 ${nums[1]}%\n静音: ${autoMute ? '是' : '否'}\n\n刷新页面后生效。`);
+      location.reload();
+    });
+
+    // 固定底部输入框菜单
+    const fixedInput = gmGet('fixedInput', false);
+    GM_registerMenuCommand(`${fixedInput ? '✓' : '○'} 固定底部输入框`, () => {
+      const newValue = !gmGet('fixedInput', false);
+      gmSet('fixedInput', newValue);
+      alert(`已${newValue ? '开启' : '关闭'}固定底部输入框，刷新页面后生效。`);
       location.reload();
     });
   }
@@ -635,6 +644,25 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
   padding: 0 2ch; color: var(--dim); white-space: pre;
 }
 #cc-root .cc-shortcuts[hidden] { display: none; }
+
+/* 固定底部输入框样式 */
+#cc-root.cc-fixed-input {
+  padding-bottom: 140px;
+}
+#cc-root.cc-fixed-input .cc-input-area {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  padding: 8px 16px 16px;
+  z-index: 1000;
+}
+/* 快捷键展开时增加底部间距 */
+#cc-root.cc-fixed-input .cc-shortcuts:not([hidden]) ~ * {
+  margin-bottom: 0;
+}
 `;
 
   /* ------------------------------------------------------------------ */
@@ -1218,8 +1246,11 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
       modeEl.className = MODES[mode].cls;
     }
 
-    const root = h('div', { id: 'cc-root' }, transcript, spinner, inputBox, hints, shortcuts);
+    // 将输入相关元素包装到容器中
+    const inputArea = h('div', { class: 'cc-input-area' }, inputBox, hints, shortcuts);
+    const root = h('div', { id: 'cc-root' }, transcript, spinner, inputArea);
     if (gmGet('quiet', false)) root.classList.add('cc-quiet');
+    if (gmGet('fixedInput', false)) root.classList.add('cc-fixed-input');
     document.body.appendChild(root);
 
     const append = (node) => {
