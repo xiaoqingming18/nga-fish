@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NGA 摸鱼优化
 // @namespace    https://github.com/xiaoqingming18/nga-fish
-// @version      0.10.0
+// @version      0.11.0
 // @description  将 NGA 分区话题列表页与话题页伪装成 Claude Code CLI 界面：只保留话题列表 / 帖子内容，表情原样显示，图片以 [image] 占位，并穿插模拟的 tool use 输出
 // @author       xiaoqingming18
 // @homepage     https://github.com/xiaoqingming18/nga-fish
@@ -61,6 +61,24 @@
     videoScale: 80,   // 播放：原尺寸的 80%
     autoMute: true    // 默认静音播放
   };
+
+  // 代码块伪装程度默认配置
+  const DEFAULT_DISGUISE_LEVEL = {
+    level: 2,         // 伪装等级：1=低（简洁），2=中（平衡），3=高（密集）
+    minFillers: 0,    // 最小穿插数（根据 level 自动计算）
+    maxFillers: 2,    // 最大穿插数（根据 level 自动计算）
+    fillerChance: 0.3 // 穿插概率（根据 level 自动计算）
+  };
+
+  // 根据等级计算伪装参数
+  function getDisguiseParams(level) {
+    const presets = {
+      1: { minFillers: 0, maxFillers: 1, fillerChance: 0.15 }, // 低：偶尔穿插
+      2: { minFillers: 0, maxFillers: 2, fillerChance: 0.30 }, // 中：适度穿插（默认）
+      3: { minFillers: 1, maxFillers: 3, fillerChance: 0.50 }  // 高：频繁穿插
+    };
+    return presets[level] || presets[2];
+  }
 
   const enabled = gmGet('enabled', true);
   if (typeof GM_registerMenuCommand === 'function') {
@@ -148,6 +166,36 @@
       const newValue = !gmGet('fixedInput', false);
       gmSet('fixedInput', newValue);
       alert(`已${newValue ? '开启' : '关闭'}固定底部输入框，刷新页面后生效。`);
+      location.reload();
+    });
+
+    // 代码块伪装程度菜单
+    GM_registerMenuCommand('代码块伪装程度', () => {
+      const config = gmGet('disguiseLevel', DEFAULT_DISGUISE_LEVEL);
+      const currentLevel = config.level || 2;
+      const levelNames = { 1: '低（简洁）', 2: '中（平衡）', 3: '高（密集）' };
+      
+      const hint = `当前伪装程度: ${levelNames[currentLevel]}\n\n` +
+                   `伪装程度控制代码块、工具调用等伪装输出的插入频率：\n\n` +
+                   `1 = 低（简洁）  - 偶尔穿插，适合快速浏览\n` +
+                   `2 = 中（平衡）  - 适度穿插，推荐设置\n` +
+                   `3 = 高（密集）  - 频繁穿插，最强伪装效果\n\n` +
+                   `请输入等级（1-3）：`;
+      
+      const input = prompt(hint, String(currentLevel));
+      
+      if (!input) return;
+      
+      const level = parseInt(input.trim(), 10);
+      
+      if (![1, 2, 3].includes(level)) {
+        alert('输入错误！等级必须是 1、2 或 3');
+        return;
+      }
+      
+      const params = getDisguiseParams(level);
+      gmSet('disguiseLevel', { level, ...params });
+      alert(`伪装程度已设置为：${levelNames[level]}\n\n刷新页面后生效。`);
       location.reload();
     });
   }
@@ -1125,6 +1173,10 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
       return () => a[k++ % a.length];
     };
 
+    // 获取用户配置的伪装参数
+    const disguiseConfig = gmGet('disguiseLevel', DEFAULT_DISGUISE_LEVEL);
+    const disguiseParams = getDisguiseParams(disguiseConfig.level || 2);
+
     const project = PROJECTS[hashStr(fid || '0') % PROJECTS.length];
     const isWin = /Windows/i.test(navigator.userAgent);
     const cwd = isWin ? `C:\\Users\\dev\\code\\${project}` : `/Users/dev/code/${project}`;
@@ -1176,15 +1228,24 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
     }
 
     return {
-      rng, pick, deck, project, transcript, add,
+      rng, pick, deck, project, transcript, add, disguiseParams,
       startTodos(items) {
         todos = items;
         todoDone = 0;
         add(todosBlock(items, 0));
       },
       interlude() {
-        add(filler());
-        if (rng() < 0.3) add(filler());
+        // 根据用户配置的伪装参数决定穿插数量
+        const { minFillers, maxFillers, fillerChance } = disguiseParams;
+        
+        // 按概率决定是否穿插
+        if (rng() < fillerChance) {
+          // 穿插 minFillers 到 maxFillers 个伪装块
+          const count = minFillers + Math.floor(rng() * (maxFillers - minFillers + 1));
+          for (let i = 0; i < count; i++) {
+            add(filler());
+          }
+        }
       },
     };
   }
