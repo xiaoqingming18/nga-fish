@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NGA 摸鱼优化
 // @namespace    https://github.com/xiaoqingming18/nga-fish
-// @version      0.11.1
+// @version      0.12.0
 // @description  将 NGA 分区话题列表页与话题页伪装成 Claude Code CLI 界面：只保留话题列表 / 帖子内容，表情原样显示，图片以 [image] 占位，并穿插模拟的 tool use 输出
 // @author       xiaoqingming18
 // @homepage     https://github.com/xiaoqingming18/nga-fish
@@ -68,6 +68,13 @@
     minFillers: 0,    // 最小穿插数（根据 level 自动计算）
     maxFillers: 2,    // 最大穿插数（根据 level 自动计算）
     fillerChance: 0.3 // 穿插概率（根据 level 自动计算）
+  };
+
+  // 长帖子穿插伪装默认配置
+  const DEFAULT_LONG_POST_DISGUISE = {
+    enabled: false,    // 默认关闭
+    threshold: 500,    // 字数阈值：大于 500 字算长帖子
+    interval: 300      // 每 300 字穿插一次 tool use
   };
 
   // 根据等级计算伪装参数（6 档）
@@ -205,6 +212,62 @@
       const params = getDisguiseParams(level);
       gmSet('disguiseLevel', { level, ...params });
       alert(`伪装程度已设置为：${levelNames[level]}\n\n刷新页面后生效。`);
+      location.reload();
+    });
+
+    // 长帖子穿插伪装菜单
+    GM_registerMenuCommand('长帖子穿插伪装', () => {
+      const config = gmGet('longPostDisguise', DEFAULT_LONG_POST_DISGUISE);
+      const enabledText = config.enabled ? '开启' : '关闭';
+      
+      const hint = `当前配置:\n` +
+                   `状态: ${enabledText}\n` +
+                   `长帖子阈值: ${config.threshold} 字\n` +
+                   `穿插间隔: ${config.interval} 字\n\n` +
+                   `说明：在长帖子中每隔一定字数穿插 tool use 伪装，\n` +
+                   `使长文更贴近真实开发场景。\n\n` +
+                   `配置格式：开关,阈值,间隔\n` +
+                   `例如：开启,500,300  或  关闭,800,400\n\n` +
+                   `开关：开启/关闭 或 1/0\n` +
+                   `阈值：大于多少字算长帖子（建议 300-1000）\n` +
+                   `间隔：每多少字穿插一次（建议 200-500）\n\n` +
+                   `请输入配置：`;
+      
+      const input = prompt(hint, `${enabledText},${config.threshold},${config.interval}`);
+      
+      if (!input) return;
+      
+      const parts = input.split(/[,，\s]+/).map(s => s.trim());
+      
+      if (parts.length !== 3) {
+        alert('输入格式错误！需要三个值：开关,阈值,间隔');
+        return;
+      }
+      
+      const [enableStr, thresholdStr, intervalStr] = parts;
+      const enableMap = { '开启': true, '关闭': false, '1': true, '0': false };
+      const enabled = enableMap[enableStr];
+      
+      if (enabled === undefined) {
+        alert('开关设置错误！必须是：开启/关闭 或 1/0');
+        return;
+      }
+      
+      const threshold = parseInt(thresholdStr, 10);
+      const interval = parseInt(intervalStr, 10);
+      
+      if (isNaN(threshold) || threshold < 100 || threshold > 5000) {
+        alert('阈值错误！必须是 100-5000 之间的整数');
+        return;
+      }
+      
+      if (isNaN(interval) || interval < 50 || interval > 2000) {
+        alert('间隔错误！必须是 50-2000 之间的整数');
+        return;
+      }
+      
+      gmSet('longPostDisguise', { enabled, threshold, interval });
+      alert(`长帖子穿插伪装已配置：\n状态: ${enabled ? '开启' : '关闭'}\n阈值: ${threshold} 字\n间隔: ${interval} 字\n\n刷新页面后生效。`);
       location.reload();
     });
   }
@@ -1095,6 +1158,86 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
     return out;
   }
 
+  // 为长帖子插入伪装块
+  function insertLongPostDisguise(contentNode, config, rng) {
+    if (!config.enabled) return contentNode;
+    
+    const textLength = contentNode.textContent.length;
+    if (textLength < config.threshold) return contentNode;
+    
+    // 创建伪装块生成器（复用现有素材）
+    const createDisguiseBlock = () => {
+      const r = rng();
+      if (r < 0.25) {
+        // Read 工具
+        const files = ['context.md', 'notes.txt', 'thread.json', 'analysis.md', 'summary.txt'];
+        const file = files[Math.floor(rng() * files.length)];
+        const lines = 50 + Math.floor(rng() * 150);
+        return tool('cc-noise', 'Read', file, [['Read ', h('span', { class: 'cc-b' }, String(lines)), ' lines (ctrl+r to expand)']]);
+      } else if (r < 0.45) {
+        // Thinking 块
+        return thinkingBlock();
+      } else if (r < 0.65) {
+        // Bash 命令
+        const cmds = [
+          'grep -i "keyword" content.txt',
+          'wc -l thread_*.txt',
+          'cat analysis.md | head -n 20',
+          'find . -name "*.md" -type f'
+        ];
+        const cmd = cmds[Math.floor(rng() * cmds.length)];
+        const out = Math.floor(rng() * 20) + 1;
+        return tool('cc-noise', 'Bash', cmd, [`${out} matches found`]);
+      } else if (r < 0.85) {
+        // 文本块
+        const texts = [
+          '继续分析帖子内容的上下文...',
+          '整理关键信息点，准备总结',
+          '检查是否有需要跟进的细节',
+          '核对时间线和逻辑关系'
+        ];
+        const txt = texts[Math.floor(rng() * texts.length)];
+        return textBlock(txt, 'cc-noise');
+      } else {
+        // Search 工具
+        const patterns = ['关键词', '时间', '人物', '地点'];
+        const pattern = patterns[Math.floor(rng() * patterns.length)];
+        const matches = Math.floor(rng() * 10) + 1;
+        return tool('cc-noise', 'Search', `pattern: "${pattern}"`, 
+          [['Found ', h('span', { class: 'cc-b' }, String(matches)), ' matches']]);
+      }
+    };
+    
+    // 遍历子节点，按字数累计插入伪装块
+    const result = h('div', { class: 'cc-post-c' });
+    const children = [...contentNode.childNodes];
+    let charCount = 0;
+    
+    for (let i = 0; i < children.length; i++) {
+      const child = children[i];
+      const childClone = child.cloneNode(true);
+      result.append(childClone);
+      
+      // 累计字数（只统计文本节点和非伪装内容）
+      const childText = child.textContent || '';
+      charCount += childText.length;
+      
+      // 检查是否到达插入点（在段落边界处插入）
+      const isLastChild = i === children.length - 1;
+      const nextIsBlock = !isLastChild && children[i + 1].nodeType === 1 && 
+                          (children[i + 1].tagName === 'DIV' || children[i + 1].classList?.contains('cc-quote'));
+      const hasDoubleNewline = childText.includes('\n\n');
+      
+      // 在段落边界且达到间隔字数时插入
+      if (charCount >= config.interval && (nextIsBlock || hasDoubleNewline || isLastChild)) {
+        result.append(createDisguiseBlock());
+        charCount = 0; // 重置计数
+      }
+    }
+    
+    return result;
+  }
+
   function parsePosts(root) {
     const seen = new Set();
     return [...root.querySelectorAll('[id^="postcontent"]')].map((el) => {
@@ -1124,14 +1267,20 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
     return document.title.replace(/\s*NGA玩家社区\s*$/, '').trim();
   }
 
-  function postLine(p) {
+  function postLine(p, rng, longPostConfig) {
+    // 应用长帖子伪装（如果启用）
+    let content = p.content;
+    if (rng && longPostConfig) {
+      content = insertLongPostDisguise(p.content, longPostConfig, rng);
+    }
+    
     return h('div', null,
       h('div', null,
         h('span', { class: 'cc-dim' }, `#${p.floor}`), '  ',
         h('span', { class: 'cc-code' }, p.author || 'anonymous'),
         p.date ? h('span', { class: 'cc-meta', title: p.dateFull || null }, `  ${p.date}`) : null),
       p.subject ? h('div', { class: 'cc-b' }, p.subject) : null,
-      p.content);
+      content);
   }
 
   const kv = (k, v) => [h('span', { class: 'cc-dim' }, (k + ':').padEnd(10)), v];
@@ -1855,6 +2004,9 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
     const s = createSession(`read:${tid}:${paging.cur}`, fid);
     const { rng, add } = s;
     const repo = `${ORG}/${s.project}`;
+    
+    // 获取长帖子伪装配置
+    const longPostConfig = gmGet('longPostDisguise', DEFAULT_LONG_POST_DISGUISE);
 
     add(userBlock(s.pick(READ_PROMPTS).replace('{tid}', tid)));
     add(textBlock(s.pick(READ_INTROS)));
@@ -1866,6 +2018,8 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
     if (posts[0].floor === 0) {
       const p = posts[0];
       replies = posts.slice(1);
+      // 对楼主帖应用长帖子伪装
+      const opContent = insertLongPostDisguise(p.content, longPostConfig, rng);
       const main = block('',
         dotRow('cc-green', h('span', { class: 'cc-b' }, 'Bash'), '(', `gh issue view ${tid} --repo ${repo}`, ')'),
         results([
@@ -1875,7 +2029,7 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
           kv('created', h('span', { title: p.dateFull || null }, p.date)),
           kv('number', '#' + tid),
           h('span', { class: 'cc-dim' }, '--'),
-          p.content,
+          opContent,
         ]));
       main.classList.add('cc-item');
       main.id = 'cc-l0';
@@ -1890,7 +2044,7 @@ html.cc-on body > :not(#cc-root) { display: none !important; }
     for (let i = 0; i < replies.length;) {
       const n = Math.min(2 + Math.floor(rng() * 3), replies.length - i);
       const group = replies.slice(i, i + n);
-      const lines = results(group.map(postLine));
+      const lines = results(group.map(p => postLine(p, rng, longPostConfig)));
       lines.forEach((el, k) => {
         el.classList.add('cc-item', 'cc-postres');
         el.id = 'cc-l' + group[k].floor;
