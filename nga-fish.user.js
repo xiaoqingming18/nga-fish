@@ -1,9 +1,13 @@
 // ==UserScript==
 // @name         NGA 摸鱼优化
-// @namespace    https://github.com/nga-fish
+// @namespace    https://github.com/xiaoqingming18/nga-fish
 // @version      0.10.0
 // @description  将 NGA 分区话题列表页与话题页伪装成 Claude Code CLI 界面：只保留话题列表 / 帖子内容，表情原样显示，图片以 [image] 占位，并穿插模拟的 tool use 输出
-// @author       nga-fish
+// @author       xiaoqingming18
+// @homepage     https://github.com/xiaoqingming18/nga-fish
+// @supportURL   https://github.com/xiaoqingming18/nga-fish/issues
+// @updateURL    https://raw.githubusercontent.com/xiaoqingming18/nga-fish/main/nga-fish.user.js
+// @downloadURL  https://raw.githubusercontent.com/xiaoqingming18/nga-fish/main/nga-fish.user.js
 // @match        *://bbs.nga.cn/thread.php*
 // @match        *://bbs.nga.cn/read.php*
 // @match        *://ngabbs.com/thread.php*
